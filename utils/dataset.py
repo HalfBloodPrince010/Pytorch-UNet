@@ -41,9 +41,8 @@ class BasicDataset(Dataset):
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small'
         pil_img = pil_img.resize((newW, newH))
-
+        # == Reducing Image Dimension ==
         pil_img = transform(pil_img)
-
         img_nd = np.array(pil_img)
 
         if len(img_nd.shape) == 2:
@@ -96,6 +95,7 @@ class BasicDataset(Dataset):
         # Noisy Mask
         #plt.imshow((_mask).permute(1, 2, 0))
         #plt.show()
+
         return img_mask
 
 
@@ -115,10 +115,8 @@ class BasicDataset(Dataset):
             f'Image and mask {idx} should be the same size, but are {img.size} and {mask.size}'
 
         img = self.preprocess(img, self.scale, self.transform)
-
+       
         mask = self.preprocess(mask, self.scale, self.transform)
-
-        exit(0)
 
         if i in self.idxs:
             mask = self.add_gaussian_noise(torch.from_numpy(mask).type(torch.FloatTensor))

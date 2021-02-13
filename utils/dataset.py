@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import Dataset
 import logging
 from PIL import Image
+from torchvision import transforms
 
 import random
 import cv2 
@@ -22,22 +23,26 @@ class BasicDataset(Dataset):
 
         self.ids = [splitext(file)[0] for file in listdir(imgs_dir)
                     if not file.startswith('.')]
+        
         #================================ Random Indexes to add noise =====================================
         self.n_idxs = int(0.2 * len(self.ids)) # Outlier = 20%
         self.idxs = random.sample(range(len(self.ids)), self.n_idxs)
         self.rng = np.random.RandomState(100)
         self.flip_prob = 0.2
+        self.transform = transforms.Compose([transforms.Resize((256,256))])
         logging.info(f'Creating dataset with {len(self.ids)} examples')
 
     def __len__(self):
         return len(self.ids)
 
     @classmethod
-    def preprocess(cls, pil_img, scale):
+    def preprocess(cls, pil_img, scale, transform):
         w, h = pil_img.size
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small'
         pil_img = pil_img.resize((newW, newH))
+
+        pil_img = transform(pil_img)
 
         img_nd = np.array(pil_img)
 
@@ -48,7 +53,7 @@ class BasicDataset(Dataset):
         img_trans = img_nd.transpose((2, 0, 1))
         if img_trans.max() > 1:
             img_trans = img_trans / 255
-
+        
         return img_trans
 
     def dilation_and_erosion(self, img):
@@ -71,14 +76,14 @@ class BasicDataset(Dataset):
     Adding Gaussian noise to outlier masks
     """
     def add_gaussian_noise(self, img_mask):
-        logging.info("====== Adding Gaussian Noise on Image Masks ========")
+        # logging.info("====== Adding Gaussian Noise on Image Masks ========")
         # _, H, W  = img_mask.shape
 
         # flip = self.rng.binomial(1, self.flip_prob, size=(H, W))  # generates a mask for input
 
         # Mask
-        # plt.imshow(img_mask.permute(1, 2, 0))
-        # plt.show()
+        #plt.imshow(img_mask.permute(1, 2, 0))
+        #plt.show()
 
         noise = torch.FloatTensor(img_mask.shape).uniform_(0, 1)
 
@@ -89,18 +94,18 @@ class BasicDataset(Dataset):
         _mask[output_mask<0.7] = 0
 
         # Noisy Mask
-        # plt.imshow((_mask).permute(1, 2, 0))
-        # plt.show()
+        #plt.imshow((_mask).permute(1, 2, 0))
+        #plt.show()
         return img_mask
 
 
     def __getitem__(self, i):
-        print("i value:", i ,"\n")
         idx = self.ids[i]
         mask_file = glob(self.masks_dir + idx + self.mask_suffix + '.*')
         img_file = glob(self.imgs_dir + idx + '.*')
+        
         assert len(mask_file) == 1, \
-            f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
+            f"Either no mask or multiple masks found for the ID {idx}: {mask_file}"
         assert len(img_file) == 1, \
             f'Either no image or multiple images found for the ID {idx}: {img_file}'
         mask = Image.open(mask_file[0])
@@ -109,8 +114,11 @@ class BasicDataset(Dataset):
         assert img.size == mask.size, \
             f'Image and mask {idx} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess(img, self.scale)
-        mask = self.preprocess(mask, self.scale)
+        img = self.preprocess(img, self.scale, self.transform)
+
+        mask = self.preprocess(mask, self.scale, self.transform)
+
+        exit(0)
 
         if i in self.idxs:
             mask = self.add_gaussian_noise(torch.from_numpy(mask).type(torch.FloatTensor))

@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+import math
 
 import numpy as np
 import torch
@@ -21,6 +22,41 @@ dir_mask = 'data/masks/'
 dir_checkpoint = 'checkpoints/'
 
 
+#MSE loss
+def MSE_loss(Y, X):
+    ret = (X - Y)**2
+    ret = torch.sum(ret)
+    return ret
+
+
+# Beta loss
+def SE_loss(Y,X):
+    #ret = (X - Y)**2
+    #ret = torch.sum(ret,1)
+    #return ret
+    criterion = nn.BCEWithLogitsLoss()
+    ret = criterion(Y, X)
+    return ret
+    
+def Gaussian_CE_loss(Y, X, beta, sigma=1):
+    Dim = Y.shape[1]
+    const1 = -((1 + beta) / beta)
+    const2 = 1 / pow((2 * math.pi * (sigma**2)), (beta * Dim / 2))
+    SE = SE_loss(Y, X)
+    term1 = torch.exp(-(beta / (2 * (sigma**2))) * SE)
+    loss = torch.sum(const1 * (const2* term1 - 1))
+    return loss
+
+
+def beta_loss_function(pred_mask, true_mask, beta):
+    w = pred_mask.shape[2]
+    h = pred_mask.shape[3]
+    if beta > 0:
+        BBCE = Gaussian_CE_loss(pred_mask.view(-1, w*h), true_mask.view(-1, w*h), beta)
+
+    return BBCE
+
+
 def train_net(net,
               device,
               epochs=5,
@@ -34,6 +70,7 @@ def train_net(net,
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
     train, val = random_split(dataset, [n_train, n_val])
+    dataset.set_outlier_indices(train.indices)
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True, drop_last=True)
     writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_SCALE_{img_scale}')
@@ -49,7 +86,8 @@ def train_net(net,
         Device:          {device.type}
         Images scaling:  {img_scale}
     ''')
-
+    
+    beta = 0.0
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
     if net.n_classes > 1:
@@ -61,54 +99,56 @@ def train_net(net,
         net.train()
 
         epoch_loss = 0
-        with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
-            for batch in train_loader:
-                imgs = batch['image']
-                true_masks = batch['mask']
+        #with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
+        for batch in train_loader:
+            imgs = batch['image']
+            true_masks = batch['mask']
 
-                assert imgs.shape[1] == net.n_channels, \
-                    f'Network has been defined with {net.n_channels} input channels, ' \
-                    f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
-                    'the images are loaded correctly.'
+            assert imgs.shape[1] == net.n_channels, \
+                f'Network has been defined with {net.n_channels} input channels, ' \
+                f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
+                'the images are loaded correctly.'
 
-                imgs = imgs.to(device=device, dtype=torch.float32)
-                mask_type = torch.float32 if net.n_classes == 1 else torch.long
-                true_masks = true_masks.to(device=device, dtype=mask_type)
+            imgs = imgs.to(device=device, dtype=torch.float32)
+            mask_type = torch.float32 if net.n_classes == 1 else torch.long
+            true_masks = true_masks.to(device=device, dtype=mask_type)
+            masks_pred = net(imgs)
+            if beta > 0:
+                loss = beta_loss_function(masks_pred, true_masks, beta)
+            else:
+                loss = MSE_loss(masks_pred, true_masks)
+            epoch_loss += loss.item()
+            #writer.add_scalar('Loss/train', loss.item(), global_step)
 
-                masks_pred = net(imgs)
-                loss = criterion(masks_pred, true_masks)
-                epoch_loss += loss.item()
-                writer.add_scalar('Loss/train', loss.item(), global_step)
+                #pbar.set_postfix(**{'loss (batch)': loss.item()})
 
-                pbar.set_postfix(**{'loss (batch)': loss.item()})
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_value_(net.parameters(), 0.1)
+            optimizer.step()
 
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_value_(net.parameters(), 0.1)
-                optimizer.step()
+                #pbar.update(imgs.shape[0])
+            global_step += 1
+            if global_step % (n_train // (10 * batch_size)) == 0:
+                for tag, value in net.named_parameters():
+                    tag = tag.replace('.', '/')
+                    #writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
+                    #writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
+                val_score = eval_net(net, val_loader, device)
+                scheduler.step(val_score)
+                #writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
 
-                pbar.update(imgs.shape[0])
-                global_step += 1
-                if global_step % (n_train // (10 * batch_size)) == 0:
-                    for tag, value in net.named_parameters():
-                        tag = tag.replace('.', '/')
-                        writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
-                        writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
-                    val_score = eval_net(net, val_loader, device)
-                    scheduler.step(val_score)
-                    writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
+                if net.n_classes > 1:
+                    logging.info('Validation cross entropy: {}'.format(val_score))
+                    writer.add_scalar('Loss/test', val_score, global_step)
+                else:
+                    logging.info('Validation Dice Coeff: {}'.format(val_score))
+                    writer.add_scalar('Dice/test', val_score, global_step)
 
-                    if net.n_classes > 1:
-                        logging.info('Validation cross entropy: {}'.format(val_score))
-                        writer.add_scalar('Loss/test', val_score, global_step)
-                    else:
-                        logging.info('Validation Dice Coeff: {}'.format(val_score))
-                        writer.add_scalar('Dice/test', val_score, global_step)
-
-                    writer.add_images('images', imgs, global_step)
-                    if net.n_classes == 1:
-                        writer.add_images('masks/true', true_masks, global_step)
-                        writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
+                #writer.add_images('images', imgs, global_step)
+                if net.n_classes == 1:
+                    writer.add_images('masks/true', true_masks, global_step)
+                    writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
 
         if save_cp:
             try:

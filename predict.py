@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
+from torchvision.utils import save_image
 
 from unet import UNet
 from utils.data_vis import plot_img_and_mask
@@ -17,11 +18,10 @@ def predict_img(net,
                 full_img,
                 device,
                 scale_factor=1,
-                out_threshold=0.5):
+                out_threshold=0.5, outf=None):
     net.eval()
-
-    img = torch.from_numpy(BasicDataset.preprocess(full_img, scale_factor))
-
+    transform = transforms.Compose([transforms.Resize((128,128))])
+    img = torch.from_numpy(BasicDataset.preprocess(full_img, scale_factor, transform))
     img = img.unsqueeze(0)
     img = img.to(device=device, dtype=torch.float32)
 
@@ -38,7 +38,7 @@ def predict_img(net,
         tf = transforms.Compose(
             [
                 transforms.ToPILImage(),
-                transforms.Resize(full_img.size[1]),
+                #transforms.Resize(full_img.size[1]),
                 transforms.ToTensor()
             ]
         )
@@ -46,6 +46,10 @@ def predict_img(net,
         probs = tf(probs.cpu())
         full_mask = probs.squeeze().cpu().numpy()
 
+    outfn = outf.split('/')
+    outtrain_fn = "./data/predicted/train128_" + outfn[3]
+    save_image(img, outtrain_fn)
+    
     return full_mask > out_threshold
 
 
@@ -122,13 +126,13 @@ if __name__ == "__main__":
                            full_img=img,
                            scale_factor=args.scale,
                            out_threshold=args.mask_threshold,
-                           device=device)
+                           device=device, outf=out_files[i])
 
         if not args.no_save:
             out_fn = out_files[i]
             result = mask_to_image(mask)
             result.save(out_files[i])
-
+            w, h = result.size
             logging.info("Mask saved to {}".format(out_files[i]))
 
         if args.viz:

@@ -24,25 +24,31 @@ class BasicDataset(Dataset):
         self.ids = [splitext(file)[0] for file in listdir(imgs_dir)
                     if not file.startswith('.')]
         
-        #================================ Random Indexes to add noise =====================================
-        self.n_idxs = int(0.2 * len(self.ids)) # Outlier = 20%
-        self.idxs = random.sample(range(len(self.ids)), self.n_idxs)
-        self.rng = np.random.RandomState(100)
-        self.flip_prob = 0.2
-        self.transform = transforms.Compose([transforms.Resize((256,256))])
+        self.n_idxs = 0
+        self.idxs = []
+        self.transform = transforms.Compose([transforms.Resize((128,128))])
         logging.info(f'Creating dataset with {len(self.ids)} examples')
 
     def __len__(self):
         return len(self.ids)
 
+    def set_outlier_indices(self, train_data_indices):
+        print("==Setting Outlier Indicies==")
+        self.n_idxs = int(0.2 * len(train_data_indices)) # Outlier %
+        if self.n_idxs != 0:
+            self.idxs = random.sample(train_data_indices, self.n_idxs)
+
+
     @classmethod
-    def preprocess(cls, pil_img, scale, transform):
+    def preprocess(cls, pil_img, scale, transform=None):
         w, h = pil_img.size
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small'
         pil_img = pil_img.resize((newW, newH))
+        
         # == Reducing Image Dimension ==
-        pil_img = transform(pil_img)
+        if transform is not None:
+            pil_img = transform(pil_img)
         img_nd = np.array(pil_img)
 
         if len(img_nd.shape) == 2:
@@ -98,6 +104,21 @@ class BasicDataset(Dataset):
 
         return img_mask
 
+    def flip_mask_bits(self, img_mask):
+
+        """
+        Flipping the 1s to 0s and 0s to 1s
+        in the Image Mask for  x % of training images
+        40% - Here, around 2035 Images
+        """
+        res_mask = img_mask.clone()
+
+        res_mask[img_mask == 0] = 1
+
+        res_mask[img_mask == 1] = 0
+
+        return res_mask
+
 
     def __getitem__(self, i):
         idx = self.ids[i]
@@ -118,8 +139,8 @@ class BasicDataset(Dataset):
        
         mask = self.preprocess(mask, self.scale, self.transform)
 
-        if i in self.idxs:
-            mask = self.add_gaussian_noise(torch.from_numpy(mask).type(torch.FloatTensor))
+        if len(self.idxs)!=0 and i in self.idxs:
+            mask = self.flip_mask_bits(torch.from_numpy(mask).type(torch.FloatTensor))
         else:
             mask  = torch.from_numpy(mask).type(torch.FloatTensor)
 

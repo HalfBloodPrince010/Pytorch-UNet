@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from eval import eval_net
 from unet import UNet
@@ -21,40 +22,45 @@ dir_img = 'data/imgs/'
 dir_mask = 'data/masks/'
 dir_checkpoint = 'checkpoints/'
 
+# ==== Bernoulli's ====
 
-#MSE loss
-def MSE_loss(Y, X):
-    ret = (X - Y)**2
-    ret = torch.sum(ret)
-    return ret
+def BBFC_loss(Y, X, beta):
+    term1 = (1 / beta)
+    term2 = (X * torch.pow(Y, beta)) + (1 - X) * torch.pow((1 - Y), beta)
+    term2 = torch.prod(term2, dim=1) - 1
+    term3 = torch.pow(Y, (beta + 1)) + torch.pow((1 - Y), (beta + 1))
+    term3 = torch.prod(term3, dim=1) / (beta + 1)
+    loss1 = torch.sum(-term1 * term2 + term3)
 
+    if torch.isnan(loss1):
+        print('NaN Loss')
 
-# Beta loss
-def SE_loss(Y,X):
-    #ret = (X - Y)**2
-    #ret = torch.sum(ret,1)
-    #return ret
-    criterion = nn.BCEWithLogitsLoss()
-    ret = criterion(Y, X)
-    return ret
-    
-def Gaussian_CE_loss(Y, X, beta, sigma=1):
-    Dim = Y.shape[1]
-    const1 = -((1 + beta) / beta)
-    const2 = 1 / pow((2 * math.pi * (sigma**2)), (beta * Dim / 2))
-    SE = SE_loss(Y, X)
-    term1 = torch.exp(-(beta / (2 * (sigma**2))) * SE)
-    loss = torch.sum(const1 * (const2* term1 - 1))
-    return loss
+    #print("Loss",loss1)
+    return loss1
 
 
+# Reconstruction + KL divergence losses summed over all elements and batch
 def beta_loss_function(pred_mask, true_mask, beta):
+    
     w = pred_mask.shape[2]
     h = pred_mask.shape[3]
+    
+    pred_mask = pred_mask.view(-1, w*h) 
+    pred = (pred_mask > 0.2).float()
+
+    pred_masks = torch.cat((pred_mask, pred),0)
+    #print((pred_masks[1]==1).sum(dim=0))
     if beta > 0:
-        BBCE = Gaussian_CE_loss(pred_mask.view(-1, w*h), true_mask.view(-1, w*h), beta)
+        # If beta is nonzero, use the beta entropy
+        BBCE = BBFC_loss(pred_masks[1].view(-1, w*h), true_mask.view(-1, w*h), beta)
+    #else:
+        # if beta is zero use binary cross entropy
+        #BBCE = F.binary_cross_entropy(pred_mask,
+                                      #true_mask.view(-1, 784),
+                                      #reduction='sum')
 
     return BBCE
+
 
 
 def train_net(net,
@@ -87,18 +93,23 @@ def train_net(net,
         Images scaling:  {img_scale}
     ''')
     
-    beta = 0.0
+    beta = 0.001
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
     if net.n_classes > 1:
         criterion = nn.CrossEntropyLoss()
     else:
         criterion = nn.BCEWithLogitsLoss()
+    
+    train_loss = []
+
+    val_scores = []
 
     for epoch in range(epochs):
         net.train()
 
-        epoch_loss = 0
+        epoch_loss = []
+
         #with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
         for batch in train_loader:
             imgs = batch['image']
@@ -113,21 +124,22 @@ def train_net(net,
             mask_type = torch.float32 if net.n_classes == 1 else torch.long
             true_masks = true_masks.to(device=device, dtype=mask_type)
             masks_pred = net(imgs)
+
             if beta > 0:
                 loss = beta_loss_function(masks_pred, true_masks, beta)
             else:
-                loss = MSE_loss(masks_pred, true_masks)
-            epoch_loss += loss.item()
+                loss = criterion(masks_pred, true_masks)
+            epoch_loss.append(loss.item())
             #writer.add_scalar('Loss/train', loss.item(), global_step)
 
-                #pbar.set_postfix(**{'loss (batch)': loss.item()})
+            #pbar.set_postfix(**{'loss (batch)': loss.item()})
 
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_value_(net.parameters(), 0.1)
             optimizer.step()
 
-                #pbar.update(imgs.shape[0])
+            #pbar.update(imgs.shape[0])
             global_step += 1
             if global_step % (n_train // (10 * batch_size)) == 0:
                 for tag, value in net.named_parameters():
@@ -135,20 +147,23 @@ def train_net(net,
                     #writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
                     #writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
                 val_score = eval_net(net, val_loader, device)
+                val_scores.append(val_score)
                 scheduler.step(val_score)
                 #writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
 
+            
                 if net.n_classes > 1:
                     logging.info('Validation cross entropy: {}'.format(val_score))
                     writer.add_scalar('Loss/test', val_score, global_step)
                 else:
                     logging.info('Validation Dice Coeff: {}'.format(val_score))
                     writer.add_scalar('Dice/test', val_score, global_step)
-
+                
                 #writer.add_images('images', imgs, global_step)
                 if net.n_classes == 1:
                     writer.add_images('masks/true', true_masks, global_step)
                     writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
+        train_loss.append(sum(epoch_loss) / len(epoch_loss))
 
         if save_cp:
             try:
@@ -159,7 +174,26 @@ def train_net(net,
             torch.save(net.state_dict(),
                        dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
             logging.info(f'Checkpoint {epoch + 1} saved !')
+    
+    #print("Epoch Train Loss",train_loss, "\tLength:",len(train_loss))
+    
+    # == Train Loss Curves ==
+    plt.figure(figsize=(20,10))
+    plt.subplot(2, 1, 1)
+    plt.title('Training loss')
+    plt.plot(train_loss, '-o')
+    plt.xlabel('Epoch')
+    plt.savefig('./plots/train_loss.png')
+    
+    # == Validation Loss Curves ==
+    plt.figure(figsize=(20,10))
+    plt.subplot(2, 1, 1)
+    plt.title('Validation loss')
+    plt.plot(val_scores, '-o')
+    plt.xlabel('Total Batch size/10')
+    plt.savefig('./plots/val_score.png')
 
+    #print("Epoch Val coeffs",val_scores,"\tLength:",len(val_scores))
     writer.close()
 
 

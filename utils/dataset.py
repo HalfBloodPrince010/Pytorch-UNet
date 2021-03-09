@@ -34,7 +34,7 @@ class BasicDataset(Dataset):
 
     def set_outlier_indices(self, train_data_indices):
         print("==Setting Outlier Indicies==")
-        self.n_idxs = int(0.2 * len(train_data_indices)) # Outlier %
+        self.n_idxs = int(0 * len(train_data_indices)) # Outlier %
         if self.n_idxs != 0:
             self.idxs = random.sample(train_data_indices, self.n_idxs)
 
@@ -111,6 +111,7 @@ class BasicDataset(Dataset):
         in the Image Mask for  x % of training images
         40% - Here, around 2035 Images
         """
+
         res_mask = img_mask.clone()
 
         res_mask[img_mask == 0] = 1

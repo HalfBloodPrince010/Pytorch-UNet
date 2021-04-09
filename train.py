@@ -10,6 +10,8 @@ import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import pickle
+import pandas as pd
 
 from eval import eval_net
 from unet import UNet
@@ -23,7 +25,7 @@ dir_mask = 'data/masks/'
 dir_checkpoint = 'checkpoints/'
 
 # ==== Bernoulli's ====
-
+"""
 def BBFC_loss(Y, X, beta):
     term1 = (1 / beta)
     term2 = (X * torch.pow(Y, beta)) + (1 - X) * torch.pow((1 - Y), beta)
@@ -40,19 +42,17 @@ def BBFC_loss(Y, X, beta):
 
 
 # Reconstruction + KL divergence losses summed over all elements and batch
-def beta_loss_function(pred_mask, true_mask, beta):
+def beta_loss_function(pred_mask, true_mask, beta, m):
     
     w = pred_mask.shape[2]
     h = pred_mask.shape[3]
     
     pred_mask = pred_mask.view(-1, w*h) 
-    pred = (pred_mask > 0.2).float()
-
-    pred_masks = torch.cat((pred_mask, pred),0)
-    #print((pred_masks[1]==1).sum(dim=0))
+    pred = m(pred_mask)
+    
     if beta > 0:
         # If beta is nonzero, use the beta entropy
-        BBCE = BBFC_loss(pred_masks[1].view(-1, w*h), true_mask.view(-1, w*h), beta)
+        BBCE = BBFC_loss(pred.view(-1, w*h), true_mask.view(-1, w*h), beta)
     #else:
         # if beta is zero use binary cross entropy
         #BBCE = F.binary_cross_entropy(pred_mask,
@@ -60,7 +60,43 @@ def beta_loss_function(pred_mask, true_mask, beta):
                                       #reduction='sum')
 
     return BBCE
+"""
 
+# Gaussian
+
+#MSE loss
+def MSE_loss(Y, X):
+    ret = (X - Y)**2
+    ret = torch.sum(ret)
+    
+    return ret
+      
+# Beta loss
+def SE_loss(Y,X):
+    ret = (X - Y)**2
+    ret = torch.sum(ret,1)
+    
+    return ret
+                  
+def Gaussian_CE_loss(Y, X, beta, sigma=1):
+    Dim = Y.shape[1]
+    const1 = -((1 + beta) / beta)
+    const2 = 1 / pow((2 * math.pi * (sigma**2)), (beta * Dim / 2))
+    SE = SE_loss(Y, X)
+    term1 = torch.exp(-(beta / (2 * (sigma**2))) * SE)
+    loss = torch.sum(const1 * (const2* term1 - 1))
+    
+    return loss
+                                
+def beta_loss_function(pred_mask, true_mask, beta):
+    w = pred_mask.shape[2]
+    h = pred_mask.shape[3]
+    if beta > 0:
+        BBCE = Gaussian_CE_loss(pred_mask.view(-1, w*h), true_mask.view(-1, w*h), beta)
+    else:
+        BBCE = MSE_loss(pred_mask.view(-1, w*h), true_mask.view(-1, w*h))
+    
+    return BBCE
 
 
 def train_net(net,
@@ -93,14 +129,16 @@ def train_net(net,
         Images scaling:  {img_scale}
     ''')
     
-    beta = 0.001
+    beta = 0.0
+    s_model = torch.nn.Softmax(dim=1)
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
+    """
     if net.n_classes > 1:
         criterion = nn.CrossEntropyLoss()
     else:
         criterion = nn.BCEWithLogitsLoss()
-    
+    """
     train_loss = []
 
     val_scores = []
@@ -124,11 +162,7 @@ def train_net(net,
             mask_type = torch.float32 if net.n_classes == 1 else torch.long
             true_masks = true_masks.to(device=device, dtype=mask_type)
             masks_pred = net(imgs)
-
-            if beta > 0:
-                loss = beta_loss_function(masks_pred, true_masks, beta)
-            else:
-                loss = criterion(masks_pred, true_masks)
+            loss = beta_loss_function(masks_pred, true_masks, beta)
             epoch_loss.append(loss.item())
             #writer.add_scalar('Loss/train', loss.item(), global_step)
 
@@ -151,19 +185,25 @@ def train_net(net,
                 scheduler.step(val_score)
                 #writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
 
-            
+                """
                 if net.n_classes > 1:
                     logging.info('Validation cross entropy: {}'.format(val_score))
                     writer.add_scalar('Loss/test', val_score, global_step)
                 else:
                     logging.info('Validation Dice Coeff: {}'.format(val_score))
                     writer.add_scalar('Dice/test', val_score, global_step)
-                
+                """
                 #writer.add_images('images', imgs, global_step)
                 if net.n_classes == 1:
                     writer.add_images('masks/true', true_masks, global_step)
                     writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
         train_loss.append(sum(epoch_loss) / len(epoch_loss))
+        
+        if epoch == 50:
+            train_pd = pd.DataFrame({'train': train_loss})
+            val_pd = pd.DataFrame({'val': val_scores})
+            train_pd.to_csv('./plots/train_loss')
+            val_pd.to_csv('./plots/val_scores')
 
         if save_cp:
             try:
@@ -174,9 +214,7 @@ def train_net(net,
             torch.save(net.state_dict(),
                        dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
             logging.info(f'Checkpoint {epoch + 1} saved !')
-    
-    #print("Epoch Train Loss",train_loss, "\tLength:",len(train_loss))
-    
+   
     # == Train Loss Curves ==
     plt.figure(figsize=(20,10))
     plt.subplot(2, 1, 1)
@@ -188,12 +226,11 @@ def train_net(net,
     # == Validation Loss Curves ==
     plt.figure(figsize=(20,10))
     plt.subplot(2, 1, 1)
-    plt.title('Validation loss')
+    plt.title('Validation Dice Coefficient')
     plt.plot(val_scores, '-o')
     plt.xlabel('Total Batch size/10')
     plt.savefig('./plots/val_score.png')
 
-    #print("Epoch Val coeffs",val_scores,"\tLength:",len(val_scores))
     writer.close()
 
 

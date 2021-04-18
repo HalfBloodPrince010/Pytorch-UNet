@@ -32,9 +32,9 @@ class BasicDataset(Dataset):
     def __len__(self):
         return len(self.ids)
 
-    def set_outlier_indices(self, train_data_indices):
-        print("==Setting Outlier Indicies==")
-        self.n_idxs = int(0 * len(train_data_indices)) # Outlier %
+    def set_outlier_indices(self, train_data_indices, outlier_percent):
+        print("==Setting Outlier Indicies==\n%=", outlier_percent)
+        self.n_idxs = int(outlier_percent * len(train_data_indices)) # Outlier %
         if self.n_idxs != 0:
             self.idxs = random.sample(train_data_indices, self.n_idxs)
 

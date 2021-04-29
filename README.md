@@ -51,6 +51,10 @@ optional arguments:
                         white (default: 0.5)
   --scale SCALE, -s SCALE
                         Scale factor for the input images (default: 0.5)
+  --outlier OUTLIER_PERCENTAGE, -o OUTLIER_PERCENTAGE
+                        Outlier % in float - 0.1 = 10%, (default: 0.0)
+  --beta BETA_VALUE, -be BETA_VALUE
+                        Beta value for robust-unet (default: 0.0)
 ```
 You can specify which model file to use with `--model MODEL.pth`.
 

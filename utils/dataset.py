@@ -61,34 +61,25 @@ class BasicDataset(Dataset):
         
         return img_trans
 
-    def dilation_and_erosion(self, img):
-        logging.info("====== Dilating and Erosion on Images ========")
-
+    def morph(self, img, morph_type):
+   
         # Taking a matrix of size 5 as the kernel 
         kernel = np.ones((5,5), np.uint8) 
+        if morph_type == 'erosion':
+            img_ = cv2.erode(img, kernel, iterations=7)
+        if morph_type == 'smoothing':
+            img_e = cv2.erode(img, kernel, iterations=5)
+            img_ = cv2.dilate(img_e, kernel, iterations=3)
 
-        # img_erosion = cv2.erode(img, kernel, iterations=1) 
-        img_dilation = cv2.dilate(img, kernel, iterations=1) 
-  
-        cv2.imshow('Input', img) 
-        # cv2.imshow('Erosion', img_erosion) 
-        cv2.imshow('Dilation', img_dilation) 
-  
-        cv2.waitKey(0)
-        return torch.tensor(img_dilation)
+        return torch.from_numpy(img_).type(torch.FloatTensor)
 
     """ 
     Adding Gaussian noise to outlier masks
     """
     def add_gaussian_noise(self, img_mask):
-        # logging.info("====== Adding Gaussian Noise on Image Masks ========")
         # _, H, W  = img_mask.shape
 
         # flip = self.rng.binomial(1, self.flip_prob, size=(H, W))  # generates a mask for input
-
-        # Mask
-        #plt.imshow(img_mask.permute(1, 2, 0))
-        #plt.show()
 
         noise = torch.FloatTensor(img_mask.shape).uniform_(0, 1)
 
@@ -97,10 +88,6 @@ class BasicDataset(Dataset):
         _mask = output_mask.clone()
 
         _mask[output_mask<0.7] = 0
-
-        # Noisy Mask
-        #plt.imshow((_mask).permute(1, 2, 0))
-        #plt.show()
 
         return img_mask
 
@@ -137,11 +124,11 @@ class BasicDataset(Dataset):
             f'Image and mask {idx} should be the same size, but are {img.size} and {mask.size}'
 
         img = self.preprocess(img, self.scale, self.transform)
-       
         mask = self.preprocess(mask, self.scale, self.transform)
-
+        
         if len(self.idxs)!=0 and i in self.idxs:
-            mask = self.flip_mask_bits(torch.from_numpy(mask).type(torch.FloatTensor))
+            #mask = self.flip_mask_bits(torch.from_numpy(mask).type(torch.FloatTensor))
+            mask = self.morph(mask, morph_type='smoothing')
         else:
             mask  = torch.from_numpy(mask).type(torch.FloatTensor)
 

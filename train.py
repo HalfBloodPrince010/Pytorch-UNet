@@ -19,6 +19,7 @@ from unet import UNet
 from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
 from torch.utils.data import DataLoader, random_split
+import torch.nn.functional as F
 
 dir_img = 'data/imgs/'
 dir_mask = 'data/masks/'
@@ -42,29 +43,26 @@ def BBFC_loss(Y, X, beta):
 
 
 # Reconstruction + KL divergence losses summed over all elements and batch
-def beta_loss_function(pred_mask, true_mask, beta, m):
+def beta_loss_function(pred_mask, true_mask, beta):
     
     w = pred_mask.shape[2]
     h = pred_mask.shape[3]
     
     pred_mask = pred_mask.view(-1, w*h) 
-    pred = m(pred_mask)
     
     if beta > 0:
         # If beta is nonzero, use the beta entropy
-        BBCE = BBFC_loss(pred.view(-1, w*h), true_mask.view(-1, w*h), beta)
-    #else:
+        BBCE = BBFC_loss(pred_mask, true_mask.view(-1, w*h), beta)
+    else:
         # if beta is zero use binary cross entropy
-        #BBCE = F.binary_cross_entropy(pred_mask,
-                                      #true_mask.view(-1, 784),
-                                      #reduction='sum')
+        BBCE = F.binary_cross_entropy(pred_mask, true_mask.view(-1, w*h), reduction='sum')
 
     return BBCE
 """
 
 # Gaussian
 
-#MSE loss
+# MSE loss
 def MSE_loss(Y, X):
     ret = (X - Y)**2
     ret = torch.sum(ret)
